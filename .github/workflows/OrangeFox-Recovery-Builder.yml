@@ -3,14 +3,15 @@ name: Recovery2 Build
 on:
   workflow_dispatch:
     inputs:
+      # OF源码分支替换原来manifest，URL固定OF官方
       MANIFEST_URL:
-        description: 'MANIFEST_URL (SSH: git@github.com:XXXXX)'
+        description: 'OrangeFox Manifest(固定不用改)'
         required: true
-        default: 'https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp'
+        default: 'https://gitlab.com/OrangeFox/Manifest.git'
       MANIFEST_BRANCH:
-        description: 'MANIFEST_BRANCH'
+        description: 'OF源码分支'
         required: true
-        default: 'twrp-12.1'
+        default: 'fox_12.1'
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
         required: true
@@ -40,7 +41,7 @@ on:
         required: true
         default: 'L39_IVVI_4_64_V80M60BP_NZW_BT30'
       MAKEFILE_NAME:
-        description: 'MAKEFILE_NAME'
+        description: 'MAKEFILE_NAME(OF为twrp_设备名)'
         required: true
         default: 'twrp_L39_IVVI_4_64_V80M60BP_NZW_BT30'
       BUILD_TARGET:
@@ -70,16 +71,12 @@ jobs:
       - name: Cleanup
         uses: rokibhasansagar/slimhub_actions@main
 
-      - name: Prepare Build Environment
+      - name: Prepare Build Env(OF专用环境)
         run: |
-          sudo apt clean
-          sudo apt update -y
-          sudo apt upgrade -y
-          DEBIAN_FRONTEND=noninteractive sudo apt install -y \
-            git ccache gcc-multilib g++-multilib libncurses-dev \
-            lib32ncurses-dev lib32z-dev lz4 lzop schedtool \
-            squashfs-tools zip unzip curl python3 python-is-python3 \
-            x11proto-core-dev libx11-dev libgl1-mesa-dev libxml2-utils
+          sudo apt update && sudo apt upgrade -y
+          git clone https://gitlab.com/OrangeFox/misc/scripts
+          cd scripts
+          sudo bash setup/android_build_env.sh
 
       - name: Setup Java 11
         uses: actions/setup-java@v4
@@ -100,7 +97,7 @@ jobs:
           chmod +x ~/bin/repo
           sudo ln -sf ~/bin/repo /usr/bin/repo
 
-      - name: Init Repo
+      - name: Init OrangeFox Repo
         run: |
           mkdir -p workspace
           cd workspace
@@ -108,7 +105,7 @@ jobs:
           git config --global user.email "actions@github.com"
           repo init --depth=1 -u ${{ inputs.MANIFEST_URL }} -b ${{ inputs.MANIFEST_BRANCH }}
 
-      - name: Repo Sync
+      - name: Repo Sync OF Source
         run: repo sync -c -j$(nproc) --force-sync --no-clone-bundle
         working-directory: workspace
 
@@ -120,23 +117,6 @@ jobs:
         if: inputs.COMMON_TREE_URL != '' && inputs.COMMON_PATH != ''
         run: git clone ${{ inputs.COMMON_TREE_URL }} -b ${{ inputs.COMMON_TREE_BRANCH }} ./${{ inputs.COMMON_PATH }}
         working-directory: workspace
-
-      - name: Detect Build Type
-        uses: haya14busa/action-cond@v1
-        id: buildtype
-        with:
-          cond: ${{ contains(inputs.MANIFEST_BRANCH, 'twrp') }}
-          if_true: twrp
-          if_false: omni
-
-      - name: Sync Device Dependencies
-        run: |
-          if [ -f ${{ inputs.DEVICE_PATH }}/${{ steps.buildtype.outputs.value }}.dependencies ]; then
-            bash ../scripts/convert.sh ${{ inputs.DEVICE_PATH }}/${{ steps.buildtype.outputs.value }}.dependencies
-            repo sync -j$(nproc)
-          fi
-        working-directory: workspace
-        continue-on-error: true
 
       - name: Setup Swap
         uses: pierotofy/set-swap-space@master
@@ -150,32 +130,35 @@ jobs:
           ccache -M 10G
         working-directory: workspace
 
-      - name: Build Recovery
+      # OF编译命令
+      - name: Build OrangeFox
         run: |
           source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true
           export SKIP_ABI_CHECKS=true
           lunch ${{ inputs.MAKEFILE_NAME }}-eng
           make clean
-          make ${{ inputs.BUILD_TARGET }}image -j$(nproc)
+          mka ${{ inputs.BUILD_TARGET }}image -j$(nproc)
         working-directory: workspace
 
-      # ✅ 修复：正确的 action 名称
+      - name: Rename OF img
+        run: |
+          cd workspace/out/target/product/${{ inputs.DEVICE_NAME }}
+          mv OrangeFox-*.img ${{ inputs.BUILD_TARGET }}.img
+        working-directory: ${{ github.workspace }}
+
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             workspace/out/target/product/${{ inputs.DEVICE_NAME }}/${{ inputs.BUILD_TARGET }}.img
             workspace/out/target/product/${{ inputs.DEVICE_NAME }}/*.zip
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/vendor_boot.img
-            workspace/out/target/product/${{ inputs.DEVICE_NAME }}/dtbo.img
-          name: TWRP-${{ inputs.DEVICE_NAME }}-${{ github.run_id }}
+          name: OrangeFox-${{ inputs.DEVICE_NAME }}-${{ github.run_id }}
           tag_name: ${{ github.run_id }}
           body: |
-            ✅ Build Successful
-            Manifest: ${{ inputs.MANIFEST_BRANCH }}
-            Device: ${{ inputs.DEVICE_NAME }}
-            Makefile: ${{ inputs.MAKEFILE_NAME }}
-            Target: ${{ inputs.BUILD_TARGET }}.img
+            ✅ OrangeFox编译成功
+            OF分支: ${{ inputs.MANIFEST_BRANCH }}
+            设备: ${{ inputs.DEVICE_NAME }}
+            输出: ${{ inputs.BUILD_TARGET }}.img
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
